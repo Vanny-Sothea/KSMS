@@ -119,6 +119,42 @@ app.use(
 	createProxy(process.env.IDENTITY_SERVICE_URL, "identity service")
 )
 
+if (!process.env.STUDENT_SERVICE_URL) {
+	logger.error("STUDENT_SERVICE_URL is not defined")	
+	process.exit(1)
+}
+
+app.use(
+	"/v1/student",
+	captureUrl,
+	validationToken,
+	createProxy(process.env.STUDENT_SERVICE_URL, "student service")
+)
+
+if (!process.env.COURSE_SERVICE_URL) {
+	logger.error("COURSE_SERVICE_URL is not defined")
+	process.exit(1)
+}
+
+app.use(
+	"/v1/course",
+	captureUrl,
+	validationToken,
+	createProxy(process.env.COURSE_SERVICE_URL, "course service")
+)
+
+if (!process.env.GRADE_SERVICE_URL) {
+	logger.error("GRADE_SERVICE_URL is not defined")
+	process.exit(1)
+}
+
+app.use(
+	"/v1/grade",
+	captureUrl,
+	validationToken,
+	createProxy(process.env.GRADE_SERVICE_URL, "grade service")
+)
+
 // if (!process.env.MEDIA_SERVICE_URL) {
 // 	logger.error("MEDIA_SERVICE_URL is not defined")
 // 	process.exit(1)
@@ -167,6 +203,18 @@ async function startServer() {
 			logger.info(`API Gateway is running on port ${PORT}`)
 			logger.info(
 				`Identity service proxy target: ${process.env.IDENTITY_SERVICE_URL}`
+			)
+
+			logger.info(
+				`Student service proxy target: ${process.env.STUDENT_SERVICE_URL}`
+			)
+
+			logger.info(
+				`Course service proxy target: ${process.env.COURSE_SERVICE_URL}`
+			)
+
+			logger.info(
+				`Grade service proxy target: ${process.env.GRADE_SERVICE_URL}`
 			)
 			// logger.info(
 			// 	`Media service proxy target: ${process.env.MEDIA_SERVICE_URL}`

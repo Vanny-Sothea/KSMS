@@ -19,6 +19,33 @@ services:
       - /usr/src/app/node_modules
     command: pnpm run dev
 
+  student-service:
+    build:
+      context: ./student-service
+      dockerfile: Dockerfile.dev
+    volumes:
+      - ./student-service:/usr/src/app
+      - /usr/src/app/node_modules
+    command: pnpm run dev
+
+  course-service:
+    build:
+      context: ./course-service
+      dockerfile: Dockerfile.dev
+    volumes:
+      - ./course-service:/usr/src/app
+      - /usr/src/app/node_modules
+    command: pnpm run dev
+
+  grade-service:
+    build:
+      context: ./grade-service
+      dockerfile: Dockerfile.dev
+    volumes:
+      - ./grade-service:/usr/src/app
+      - /usr/src/app/node_modules
+    command: pnpm run dev
+
   # media-service:
   #   build:
   #     context: ./media-service

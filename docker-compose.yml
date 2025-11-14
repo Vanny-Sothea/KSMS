@@ -21,6 +21,33 @@ services:
     environment:
       - REDIS_URL=redis://redis:6379
 
+  student-service:
+    build: ./student-service
+    env_file: ./student-service/.env
+    depends_on:
+      - redis
+    restart: always
+    environment:
+      - REDIS_URL=redis://redis:6379
+
+  course-service:
+    build: ./course-service
+    env_file: ./course-service/.env
+    depends_on:
+      - redis
+    restart: always
+    environment:
+      - REDIS_URL=redis://redis:6379
+
+  grade-service:
+    build: ./grade-service
+    env_file: ./grade-service/.env
+    depends_on:
+      - redis
+    restart: always
+    environment:
+      - REDIS_URL=redis://redis:6379
+
   # media-service:
   #   build: ./media-service
   #   env_file: ./media-service/.env

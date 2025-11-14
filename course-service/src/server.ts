@@ -11,11 +11,11 @@ import { RedisReply, RedisStore } from "rate-limit-redis"
 import cookieParser from "cookie-parser"
 import logger from "./utils/logger"
 import errorHandler from "./middleware/errorHandler"
-import router from "./routes/authRoutes"
-import { connectToRabbitMQ } from "./utils/rabbitmq"
+import router from "./routes/studentRoutes"
+import { connectToRabbitMQ, consumeEvent } from "./utils/rabbitmq"
 
 const app = express()
-const PORT = process.env.PORT || 3001
+const PORT = process.env.PORT
 
 if (!process.env.MONGODB_URI) {
 	logger.error("MONGODB_URI is not defined")
@@ -44,7 +44,7 @@ redisClient.on("connect", () => {
 })
 
 redisClient.on("error", (err) => {
-	logger.error("Redis error", { error: err })
+	logger.error("Redis error:", err)
 })
 
 app.set("trust proxy", 1)
@@ -86,7 +86,6 @@ const sensitiveEndpointsLimiter = rateLimit({
 	}),
 })
 
-// Burst protection per IP (short duration)
 const burstLimiter = new RateLimiterRedis({
 	storeClient: redisClient,
 	keyPrefix: "middleware",
@@ -108,17 +107,15 @@ app.use((req, res, next) => {
 })
 
 // Stricter rate limiting only for sensitive endpoints (register/login/etc.)
-app.use("/api/auth/register", sensitiveEndpointsLimiter)
 
 // Global per-IP rate limiting (short burst protection)
-app.use("/api/auth", router)
+app.use("/api/course", router)
 app.use(errorHandler)
 
 async function startServer() {
 	try {
-		await connectToRabbitMQ()
 		app.listen(PORT, () => {
-			logger.info(`Identity service running on port ${PORT}`)
+			logger.info(`Course service running on port ${PORT}`)
 		})
 	} catch (e) {
 		logger.error("Failed to start server:", e)
