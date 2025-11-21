@@ -15,6 +15,9 @@ import {
   batchSemesterAggregate,
   getAllGrades,
   getCsvHistory,
+  getCsvById,
+  updateCsv,
+  deleteCsv,
 } from "../controllers/gradeController";
 
 // If you have auth middleware, you can uncomment and use it
@@ -32,6 +35,9 @@ router.get("/ping", (req, res) => {
 router.post("/upload", upload.single("file"), uploadGrades);
 // router.post("/csv/upload", upload.single("file"), uploadCsvGrades);
 router.get("/csv/history", getCsvHistory);
+router.get("/csv/:csvId", getCsvById);
+router.put("/csv/:csvId", upload.single("file"), updateCsv);
+router.delete("/csv/:csvId", deleteCsv);
 
 // Analytics
 router.get("/all", getAllGrades);

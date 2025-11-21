@@ -3,6 +3,7 @@ import { Readable } from "stream";
 // use require() to avoid type-resolution issues in environments without installed types
 const csvParser: any = require("csv-parser");
 import { StudentGrades } from "../models/Grade";
+import { CSVUpload } from "../models/CSVUpload";
 import logger from "../utils/logger";
 
 // Helper to parse CSV buffer into rows
@@ -43,6 +44,32 @@ export const uploadGrades = async (req: Request, res: Response) => {
       });
 
     const rows = await parseCsvBuffer(req.file.buffer);
+    const originalFilename = req.file.originalname || "unknown.csv";
+
+    // Create CSV Upload record
+    const csvUpload = await CSVUpload.create({
+      filename: `upload_${Date.now()}_${originalFilename}`,
+      originalName: originalFilename,
+      rowCount: rows.length,
+      processedRows: 0,
+      skippedRows: 0,
+      status: "active",
+      metadata: {
+        totalStudents: 0,
+        semesters: [],
+        batches: [],
+        majors: [],
+        courses: [],
+      },
+    });
+
+    const studentSet = new Set<string>();
+    const semesterSet = new Set<string>();
+    const batchSet = new Set<string>();
+    const majorSet = new Set<string>();
+    const courseSet = new Set<string>();
+    let processedCount = 0;
+    let skippedCount = 0;
 
     for (const raw of rows) {
       const studentId = (raw.studentId || "").toString().trim();
@@ -56,8 +83,16 @@ export const uploadGrades = async (req: Request, res: Response) => {
 
       if (!studentId || !courseCode || Number.isNaN(score)) {
         logger.warn("Skipping invalid CSV row", raw);
+        skippedCount++;
         continue;
       }
+
+      // Track metadata
+      studentSet.add(studentId);
+      if (semester) semesterSet.add(semester);
+      if (batch) batchSet.add(batch);
+      if (major) majorSet.add(major);
+      if (courseCode) courseSet.add(courseCode);
 
       const filter = { studentId, semester };
       const existing = await StudentGrades.findOne(filter);
@@ -76,6 +111,7 @@ export const uploadGrades = async (req: Request, res: Response) => {
         existing.studentName = studentName || existing.studentName;
         existing.batch = batch || existing.batch;
         existing.major = major || existing.major;
+        existing.csvUploadId = csvUpload._id;
         await existing.save();
       } else {
         await StudentGrades.create({
@@ -85,11 +121,35 @@ export const uploadGrades = async (req: Request, res: Response) => {
           major,
           semester,
           courses: [{ courseCode, courseName, score }],
+          csvUploadId: csvUpload._id,
         });
       }
+      processedCount++;
     }
 
-    return res.status(200).json({ success: true, message: "CSV processed" });
+    // Update CSV Upload metadata
+    csvUpload.processedRows = processedCount;
+    csvUpload.skippedRows = skippedCount;
+    csvUpload.metadata = {
+      totalStudents: studentSet.size,
+      semesters: Array.from(semesterSet),
+      batches: Array.from(batchSet),
+      majors: Array.from(majorSet),
+      courses: Array.from(courseSet),
+    };
+    await csvUpload.save();
+
+    return res.status(200).json({
+      success: true,
+      message: "CSV processed",
+      data: {
+        csvUploadId: csvUpload._id,
+        filename: csvUpload.originalName,
+        processedRows: processedCount,
+        skippedRows: skippedCount,
+        totalStudents: studentSet.size,
+      },
+    });
   } catch (err) {
     logger.error("Error processing CSV upload", err);
     return res
@@ -101,28 +161,308 @@ export const uploadGrades = async (req: Request, res: Response) => {
 // GET /grade/csv/history
 export const getCsvHistory = async (req: Request, res: Response) => {
   try {
-    // For simplicity, we return distinct studentIds with semesters available
-    const docs = await StudentGrades.find()
-      .select("studentId semester -_id")
+    const csvUploads = await CSVUpload.find({ status: { $ne: "deleted" } })
+      .sort({ uploadedAt: -1 })
       .lean();
-    const historyMap = new Map<string, Set<string>>();
 
-    for (const d of docs) {
-      if (!historyMap.has(d.studentId)) {
-        historyMap.set(d.studentId, new Set<string>());
-      }
-      historyMap.get(d.studentId)?.add(d.semester);
-    }
-
-    const history: Array<{ studentId: string; semesters: string[] }> = [];
-    for (const [studentId, semestersSet] of historyMap.entries()) {
-      history.push({ studentId, semesters: Array.from(semestersSet) });
-    }
+    const history = csvUploads.map((upload: any) => ({
+      _id: upload._id,
+      filename: upload.originalName,
+      uploadedAt: upload.uploadedAt,
+      rowCount: upload.rowCount,
+      processedRows: upload.processedRows,
+      skippedRows: upload.skippedRows,
+      status: upload.status,
+      metadata: upload.metadata,
+    }));
 
     return res.json({ success: true, data: history });
   } catch (err) {
     logger.error("getCsvHistory error", err);
     return res.status(500).json({ success: false, message: "Internal error" });
+  }
+};
+
+// GET /grade/csv/:csvId
+export const getCsvById = async (req: Request, res: Response) => {
+  try {
+    const { csvId } = req.params;
+
+    if (!csvId) {
+      return res
+        .status(400)
+        .json({ success: false, message: "csvId required" });
+    }
+
+    const csvUpload = await CSVUpload.findById(csvId).lean();
+
+    if (!csvUpload) {
+      return res
+        .status(404)
+        .json({ success: false, message: "CSV upload not found" });
+    }
+
+    // Get associated grade records
+    const gradeRecords = await StudentGrades.find({
+      csvUploadId: csvId,
+    }).lean();
+
+    return res.json({
+      success: true,
+      data: {
+        upload: csvUpload,
+        gradeRecordsCount: gradeRecords.length,
+        gradeRecords: gradeRecords,
+      },
+    });
+  } catch (err) {
+    logger.error("getCsvById error", err);
+    return res.status(500).json({ success: false, message: "Internal error" });
+  }
+};
+
+// PUT /grade/csv/:csvId
+export const updateCsv = async (req: Request, res: Response) => {
+  try {
+    const { csvId } = req.params;
+
+    if (!csvId) {
+      return res
+        .status(400)
+        .json({ success: false, message: "csvId required" });
+    }
+
+    if (!req.file) {
+      return res.status(400).json({
+        success: false,
+        message: "CSV file is required under field 'file'",
+      });
+    }
+
+    // Find existing CSV upload
+    const existingCsv = await CSVUpload.findById(csvId);
+
+    if (!existingCsv) {
+      return res
+        .status(404)
+        .json({ success: false, message: "CSV upload not found" });
+    }
+
+    // Mark old CSV as replaced
+    existingCsv.status = "replaced";
+    await existingCsv.save();
+
+    // Parse new CSV
+    const rows = await parseCsvBuffer(req.file.buffer);
+    const originalFilename = req.file.originalname || "unknown.csv";
+
+    // Create new CSV Upload record
+    const newCsvUpload = await CSVUpload.create({
+      filename: `upload_${Date.now()}_${originalFilename}`,
+      originalName: originalFilename,
+      rowCount: rows.length,
+      processedRows: 0,
+      skippedRows: 0,
+      status: "active",
+      metadata: {
+        totalStudents: 0,
+        semesters: [],
+        batches: [],
+        majors: [],
+        courses: [],
+      },
+    });
+
+    // Get existing grade records from old CSV
+    const existingGrades = await StudentGrades.find({
+      csvUploadId: csvId,
+    }).lean();
+
+    // Create a map for quick lookup of existing data
+    const existingMap = new Map<string, any>();
+    for (const grade of existingGrades) {
+      const key = `${grade.studentId}_${grade.semester}`;
+      existingMap.set(key, grade);
+    }
+
+    const studentSet = new Set<string>();
+    const semesterSet = new Set<string>();
+    const batchSet = new Set<string>();
+    const majorSet = new Set<string>();
+    const courseSet = new Set<string>();
+    let processedCount = 0;
+    let skippedCount = 0;
+    let updatedCount = 0;
+    let newCount = 0;
+
+    for (const raw of rows) {
+      const studentId = (raw.studentId || "").toString().trim();
+      const studentName = (raw.studentName || "").toString().trim();
+      const batch = (raw.batch || "").toString().trim();
+      const major = (raw.major || "").toString().trim();
+      const semester = (raw.semester || "").toString().trim();
+      const courseCode = (raw.courseCode || "").toString().trim();
+      const courseName = (raw.courseName || "").toString().trim();
+      const score = Number(raw.score || 0);
+
+      if (!studentId || !courseCode || Number.isNaN(score)) {
+        logger.warn("Skipping invalid CSV row", raw);
+        skippedCount++;
+        continue;
+      }
+
+      // Track metadata
+      studentSet.add(studentId);
+      if (semester) semesterSet.add(semester);
+      if (batch) batchSet.add(batch);
+      if (major) majorSet.add(major);
+      if (courseCode) courseSet.add(courseCode);
+
+      const key = `${studentId}_${semester}`;
+      const existingData = existingMap.get(key);
+
+      // Find if this record was part of the old CSV
+      const filter = { studentId, semester, csvUploadId: csvId };
+      const existing = await StudentGrades.findOne(filter);
+
+      if (existing) {
+        // Update existing record
+        let hasChanges = false;
+
+        // Check if basic info changed
+        if (
+          existing.studentName !== studentName ||
+          existing.batch !== batch ||
+          existing.major !== major
+        ) {
+          existing.studentName = studentName || existing.studentName;
+          existing.batch = batch || existing.batch;
+          existing.major = major || existing.major;
+          hasChanges = true;
+        }
+
+        // Check courses
+        const idx = existing.courses.findIndex(
+          (c: any) => c.courseCode === courseCode
+        );
+
+        if (idx >= 0) {
+          // Course exists, check if score or name changed
+          if (
+            existing.courses[idx].score !== score ||
+            (courseName && existing.courses[idx].courseName !== courseName)
+          ) {
+            existing.courses[idx].score = score;
+            if (courseName) existing.courses[idx].courseName = courseName;
+            hasChanges = true;
+          }
+        } else {
+          // New course in existing record
+          existing.courses.push({ courseCode, courseName, score });
+          hasChanges = true;
+        }
+
+        if (hasChanges) {
+          existing.csvUploadId = newCsvUpload._id;
+          await existing.save();
+          updatedCount++;
+        } else {
+          // No changes, just update the csvUploadId
+          existing.csvUploadId = newCsvUpload._id;
+          await existing.save();
+        }
+      } else {
+        // New record (not in old CSV or different semester/student combo)
+        await StudentGrades.create({
+          studentId,
+          studentName,
+          batch,
+          major,
+          semester,
+          courses: [{ courseCode, courseName, score }],
+          csvUploadId: newCsvUpload._id,
+        });
+        newCount++;
+      }
+      processedCount++;
+    }
+
+    // Update new CSV Upload metadata
+    newCsvUpload.processedRows = processedCount;
+    newCsvUpload.skippedRows = skippedCount;
+    newCsvUpload.metadata = {
+      totalStudents: studentSet.size,
+      semesters: Array.from(semesterSet),
+      batches: Array.from(batchSet),
+      majors: Array.from(majorSet),
+      courses: Array.from(courseSet),
+    };
+    await newCsvUpload.save();
+
+    return res.status(200).json({
+      success: true,
+      message: "CSV updated successfully",
+      data: {
+        newCsvUploadId: newCsvUpload._id,
+        oldCsvUploadId: csvId,
+        filename: newCsvUpload.originalName,
+        processedRows: processedCount,
+        skippedRows: skippedCount,
+        updatedRecords: updatedCount,
+        newRecords: newCount,
+        totalStudents: studentSet.size,
+      },
+    });
+  } catch (err) {
+    logger.error("updateCsv error", err);
+    return res
+      .status(500)
+      .json({ success: false, message: "Failed to update CSV" });
+  }
+};
+
+// DELETE /grade/csv/:csvId
+export const deleteCsv = async (req: Request, res: Response) => {
+  try {
+    const { csvId } = req.params;
+
+    if (!csvId) {
+      return res
+        .status(400)
+        .json({ success: false, message: "csvId required" });
+    }
+
+    // Find CSV upload
+    const csvUpload = await CSVUpload.findById(csvId);
+
+    if (!csvUpload) {
+      return res
+        .status(404)
+        .json({ success: false, message: "CSV upload not found" });
+    }
+
+    // Delete all associated grade records
+    const deleteResult = await StudentGrades.deleteMany({
+      csvUploadId: csvId,
+    });
+
+    // Mark CSV as deleted
+    csvUpload.status = "deleted";
+    await csvUpload.save();
+
+    return res.status(200).json({
+      success: true,
+      message: "CSV and associated grades deleted successfully",
+      data: {
+        csvUploadId: csvId,
+        deletedGradeRecords: deleteResult.deletedCount,
+      },
+    });
+  } catch (err) {
+    logger.error("deleteCsv error", err);
+    return res
+      .status(500)
+      .json({ success: false, message: "Failed to delete CSV" });
   }
 };
 
@@ -632,6 +972,11 @@ export const batchSemesterAggregate = async (req: Request, res: Response) => {
 
 export default {
   uploadGrades,
+  getCsvHistory,
+  getCsvById,
+  updateCsv,
+  deleteCsv,
+  getAllGrades,
   performanceOverTime,
   gradeDistribution,
   strengthsWeaknesses,
